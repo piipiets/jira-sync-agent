@@ -14,14 +14,13 @@ type Config struct {
 	JiraJQL        string
 	SpreadsheetID  string
 	GoogleAuthFile string
-	GeminiAPIKey   string
 	CommentAuthor  string
 	SheetName      string
 }
 
 func LoadConfig() *Config {
 	rawID := os.Getenv("SPREADSHEET_ID")
-	
+
 	return &Config{
 		JiraURL:        os.Getenv("JIRA_URL"),
 		JiraUser:       os.Getenv("JIRA_USER"),
@@ -31,7 +30,6 @@ func LoadConfig() *Config {
 		JiraJQL:        os.Getenv("JIRA_JQL"),
 		SpreadsheetID:  parseSpreadsheetID(rawID),
 		GoogleAuthFile: os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-		GeminiAPIKey:   os.Getenv("GEMINI_API_KEY"),
 		CommentAuthor:  os.Getenv("COMMENT_AUTHOR"),
 		SheetName:      os.Getenv("SHEET_NAME"),
 	}
