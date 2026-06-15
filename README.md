@@ -13,6 +13,16 @@ The server itself does not run an AI model. It exposes tools over MCP, and an ex
 - **Google Sheets Integration:** Google Sheets API v4
 - **Configuration:** Environment variables loaded from `.env`
 
+## Key Features & Recent Updates
+
+- **Date-Centric Sync:** Automatically ensures spreadsheet dates (Column A) are chronologically ordered.
+- **Weekend Highlighting:** Automatically inserts rows for weekend gaps (Saturday/Sunday) and formats them with a red background (Columns A-H).
+- **Intelligent Comment Updates:** 
+  - For tickets in "Code Review" status (or other review statuses configured via `REVIEW_STATUSES`), the agent fetches the first reviewer comment from Jira.
+  - Updates Column D with this comment only if Column D is blank (non-destructive).
+- **Flexible Data Matching:** Uses robust regex to match ticket IDs anywhere in the summary, regardless of format.
+- **Configurable Review Statuses:** Easily define which Jira statuses trigger comment fetching using the `REVIEW_STATUSES` environment variable.
+
 ## How It Works
 
 The application starts as an MCP server over stdio. Once connected to an MCP host, it exposes tools that can fetch Jira issues, inspect ticket data, and write ticket rows into Google Sheets.
@@ -20,75 +30,18 @@ The application starts as an MCP server over stdio. Once connected to an MCP hos
 Available MCP tools:
 
 1. **`sync_all`**
-   - Fetches tickets from Jira using the configured JQL.
-   - Converts Jira issues into the internal ticket model.
-   - Updates existing Google Sheets rows or appends new rows.
+   - Fetches tickets from Jira based on the configured JQL.
+   - Handles chronological date gap-filling.
+   - Updates existing rows or appends new rows.
+   - Synchronizes "Code Review" comments conditionally (Column D).
 
 2. **`fetch_jira_tickets`**
    - Fetches Jira tickets using the configured JQL.
-   - Returns the ticket data as formatted JSON.
-   - Useful when the AI client needs to inspect Jira data before deciding what to do.
+   - Returns the ticket data as formatted JSON for AI inspection.
 
 3. **`upsert_to_sheets`**
    - Accepts a JSON array of ticket objects.
-   - Updates matching rows in Google Sheets by Jira ticket ID.
-   - Appends rows for tickets that do not already exist in the sheet.
-
-## Project Flow
-
-```text
-MCP Client
-    |
-    | calls tool: sync_all / fetch_jira_tickets / upsert_to_sheets
-    v
-cmd/agent/main.go
-    |
-    | loads environment config
-    v
-internal/config
-    |
-    | initializes Jira and Google Sheets clients
-    v
-internal/jira  ---- fetches Jira issues using JQL
-    |
-    | maps issues into []models.Ticket
-    v
-pkg/models
-    |
-    | sends tickets to Sheets client
-    v
-internal/sheets ---- updates existing rows or appends new rows
-    |
-    v
-Google Spreadsheet
-```
-
-## Data Mapping
-
-Jira issues are mapped into the shared `Ticket` model:
-
-```go
-type Ticket struct {
-    ID            string
-    Summary       string
-    Status        string
-    Assignee      string
-    CreationDate  time.Time
-    LatestComment string
-}
-```
-
-When writing to Google Sheets, the current implementation uses this layout:
-
-| Column | Value |
-| --- | --- |
-| A | Sync date |
-| B | Jira summary with ticket key, for example `Fix bug [PROJ-123]` |
-| C | Blank |
-| D | Latest tracked comment |
-| E | Current Jira status |
-
-Existing rows are detected by looking for a Jira key pattern like `[PROJ-123]` in column B.
+   - Updates matching rows in Google Sheets, respecting existing data.
 
 ## Project Structure
 
@@ -97,7 +50,7 @@ jira-to-gsheet-agent/
 |-- cmd/
 |   `-- agent/          # Main MCP server entry point
 |-- internal/
-|   |-- config/         # Environment config loader
+|   |-- config/         # Environment config loader (supports REVIEW_STATUSES)
 |   |-- jira/           # Jira REST API client
 |   `-- sheets/         # Google Sheets API client
 |-- pkg/
@@ -117,7 +70,8 @@ Create a `.env` file in the project root:
 JIRA_URL=https://your-domain.atlassian.net
 JIRA_USER=your-email@example.com
 JIRA_TOKEN=your-jira-api-token
-JIRA_JQL=project = YOURPROJ AND status in ("To Do", "In Progress", "Code Review")
+JIRA_JQL=project = YOURPROJ
+REVIEW_STATUSES="Code Review, Deploy Development, Staging, QC BC - Testing Staging"
 
 SPREADSHEET_ID=your-spreadsheet-id
 SHEET_NAME=Your Sheet Tab Name
@@ -126,56 +80,12 @@ GOOGLE_APPLICATION_CREDENTIALS=C:/path/to/service-account-key.json
 COMMENT_AUTHOR=Reviewer Name
 ```
 
-Notes:
-
-- `SPREADSHEET_ID` can be either the raw spreadsheet ID or a full Google Sheets URL.
-- `JIRA_URL` should normally be the Jira base URL, but the Jira client also attempts to extract JQL if a full Jira search URL is provided.
-- `COMMENT_AUTHOR` is used when a ticket is in `Code Review`; the Jira client looks for comments from that author.
-
-## Build
+## Build & Run
 
 ```bash
+# Build
 go build -o agent.exe ./cmd/agent
-```
 
-## Run Locally
-
-```bash
+# Run (via MCP host)
 ./agent.exe
 ```
-
-The server communicates over stdio, so it is usually launched by an MCP host rather than run manually in a terminal.
-
-## MCP Client Example
-
-Example Claude Desktop configuration:
-
-```json
-{
-  "mcpServers": {
-    "jira-sync": {
-      "command": "C:/path/to/jira-to-gsheet-agent/agent.exe",
-      "args": [],
-      "env": {
-        "JIRA_URL": "https://your-domain.atlassian.net",
-        "JIRA_USER": "your-email@example.com",
-        "JIRA_TOKEN": "your-jira-api-token",
-        "JIRA_JQL": "project = YOURPROJ",
-        "SPREADSHEET_ID": "your-spreadsheet-id",
-        "SHEET_NAME": "Your Sheet Tab Name",
-        "GOOGLE_APPLICATION_CREDENTIALS": "C:/path/to/service-account-key.json",
-        "COMMENT_AUTHOR": "Reviewer Name"
-      }
-    }
-  }
-}
-```
-
-You can provide configuration through either the `.env` file or the MCP client config environment block.
-
-## Current Behavior Notes
-
-- The Jira client filters tickets to these statuses: `To Do`, `In Progress`, `Revisi`, `Code Review`, and `Task To Do`.
-- For `Code Review` tickets, the client fetches detailed comments and stores the first comment matching `COMMENT_AUTHOR`.
-- The Sheets client updates columns D and E for existing tickets.
-- New rows are written starting after the existing data range.
