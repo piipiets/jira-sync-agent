@@ -16,10 +16,19 @@ type Config struct {
 	GoogleAuthFile string
 	CommentAuthor  string
 	SheetName      string
+	ReviewStatuses []string
 }
 
 func LoadConfig() *Config {
 	rawID := os.Getenv("SPREADSHEET_ID")
+	
+	reviewStatusesRaw := os.Getenv("REVIEW_STATUSES")
+	var reviewStatuses []string
+	if reviewStatusesRaw != "" {
+		for _, s := range strings.Split(reviewStatusesRaw, ",") {
+			reviewStatuses = append(reviewStatuses, strings.TrimSpace(s))
+		}
+	}
 
 	return &Config{
 		JiraURL:        os.Getenv("JIRA_URL"),
@@ -32,6 +41,7 @@ func LoadConfig() *Config {
 		GoogleAuthFile: os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
 		CommentAuthor:  os.Getenv("COMMENT_AUTHOR"),
 		SheetName:      os.Getenv("SHEET_NAME"),
+		ReviewStatuses: reviewStatuses,
 	}
 }
 

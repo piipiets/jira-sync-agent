@@ -14,11 +14,12 @@ import (
 )
 
 type Client struct {
-	baseURL       string
-	user          string
-	token         string
-	customJQL     string
-	commentAuthor string
+	baseURL        string
+	user           string
+	token          string
+	customJQL      string
+	commentAuthor  string
+	reviewStatuses []string
 }
 
 func NewClient(cfg *config.Config) (*Client, error) {
@@ -40,18 +41,28 @@ func NewClient(cfg *config.Config) (*Client, error) {
 			}
 			customJQL = u.Query().Get("jql")
 		}
-		
+
 		fmt.Printf("[DEBUG] Automatically set BaseURL: %s\n", baseURL)
 		fmt.Printf("[DEBUG] Automatically set JQL: %s\n", customJQL)
 	}
 
 	return &Client{
-		baseURL:       baseURL,
-		user:          cfg.JiraUser,
-		token:         cfg.JiraToken,
-		customJQL:     customJQL,
-		commentAuthor: cfg.CommentAuthor,
+		baseURL:        baseURL,
+		user:           cfg.JiraUser,
+		token:          cfg.JiraToken,
+		customJQL:      customJQL,
+		commentAuthor:  strings.Trim(cfg.CommentAuthor, "\""),
+		reviewStatuses: cfg.ReviewStatuses,
 	}, nil
+}
+
+func (c *Client) isReviewStatus(status string) bool {
+	for _, s := range c.reviewStatuses {
+		if s == status {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) getDetailedComments(issueKey string) ([]struct {
@@ -73,6 +84,8 @@ func (c *Client) getDetailedComments(issueKey string) ([]struct {
 	}
 
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Atlassian-Token", "no-check")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -102,6 +115,83 @@ func (c *Client) getDetailedComments(issueKey string) ([]struct {
 	}
 
 	return result.Fields.Comment.Comments, nil
+}
+
+func (c *Client) GetTicket(key string) (models.Ticket, error) {
+	detailURL := fmt.Sprintf("%s/rest/api/2/issue/%s?fields=summary,status,assignee,created", c.baseURL, key)
+	req, err := http.NewRequest("GET", detailURL, nil)
+	if err != nil {
+		return models.Ticket{}, err
+	}
+
+	if c.user == "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	} else {
+		req.SetBasicAuth(c.user, c.token)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Atlassian-Token", "no-check")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return models.Ticket{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return models.Ticket{}, fmt.Errorf("failed to fetch issue %s: %s", key, resp.Status)
+	}
+
+	var issue struct {
+		Key    string `json:"key"`
+		Fields struct {
+			Summary string `json:"summary"`
+			Status  struct {
+				Name string `json:"name"`
+			} `json:"status"`
+			Assignee struct {
+				DisplayName string `json:"displayName"`
+			} `json:"assignee"`
+			Created string `json:"created"`
+		} `json:"fields"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&issue); err != nil {
+		return models.Ticket{}, err
+	}
+
+	statusName := issue.Fields.Status.Name
+	createdAt, _ := time.Parse("2006-01-02T15:04:05.000-0700", issue.Fields.Created)
+
+	assignee := "Unassigned"
+	if issue.Fields.Assignee.DisplayName != "" {
+		assignee = issue.Fields.Assignee.DisplayName
+	}
+
+	latestComment := ""
+	if c.isReviewStatus(statusName) {
+		comments, err := c.getDetailedComments(issue.Key)
+		if err == nil {
+			// Find the FIRST comment from the configured author (iterate forward)
+			for i := 0; i < len(comments); i++ {
+				if comments[i].Author.DisplayName == c.commentAuthor {
+					latestComment = comments[i].Body
+					break
+				}
+			}
+		}
+	}
+
+	return models.Ticket{
+		ID:            issue.Key,
+		Summary:       issue.Fields.Summary,
+		Status:        statusName,
+		Assignee:      assignee,
+		CreationDate:  createdAt,
+		LatestComment: latestComment,
+	}, nil
 }
 
 func (c *Client) GetTickets() ([]models.Ticket, error) {
@@ -171,11 +261,11 @@ func (c *Client) GetTickets() ([]models.Ticket, error) {
 
 	// Allowed statuses for filtering
 	allowedStatuses := map[string]bool{
+		"Task To Do":  true,
 		"To Do":       true,
 		"In Progress": true,
 		"Revisi":      true,
 		"Code Review": true,
-		"Task To Do":  true,
 	}
 
 	var tickets []models.Ticket
@@ -189,20 +279,20 @@ func (c *Client) GetTickets() ([]models.Ticket, error) {
 		if err != nil {
 			createdAt, _ = time.Parse(time.RFC3339, issue.Fields.Created)
 		}
-		
+
 		assignee := "Unassigned"
 		if issue.Fields.Assignee.DisplayName != "" {
 			assignee = issue.Fields.Assignee.DisplayName
 		}
 
 		latestComment := ""
-		if statusName == "Code Review" {
-			fmt.Printf("[DEBUG] Fetching details for Code Review ticket: %s\n", issue.Key)
+		if c.isReviewStatus(statusName) {
+			fmt.Printf("[DEBUG] Fetching details for review ticket: %s\n", issue.Key)
 			comments, err := c.getDetailedComments(issue.Key)
 			if err != nil {
 				fmt.Printf("[WARN] Failed to fetch comments for %s: %v\n", issue.Key, err)
 			} else {
-				// Find the first comment from the configured author
+				// Find the FIRST comment from the configured author (iterate forward)
 				for i := 0; i < len(comments); i++ {
 					if comments[i].Author.DisplayName == c.commentAuthor {
 						latestComment = comments[i].Body

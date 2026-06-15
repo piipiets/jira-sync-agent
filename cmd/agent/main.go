@@ -55,7 +55,7 @@ func main() {
 			return mcp.NewToolResultError(fmt.Sprintf("Jira fetch failed: %v", err)), nil
 		}
 
-		err = sheetsClient.UpsertTickets(tickets)
+		err = sheetsClient.UpsertTickets(tickets, jiraClient)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Sheets upsert failed: %v", err)), nil
 		}
@@ -98,7 +98,7 @@ func main() {
 			return mcp.NewToolResultError(fmt.Sprintf("Invalid JSON format: %v", err)), nil
 		}
 
-		err = sheetsClient.UpsertTickets(tickets)
+		err = sheetsClient.UpsertTickets(tickets, jiraClient)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Sheets upsert failed: %v", err)), nil
 		}
