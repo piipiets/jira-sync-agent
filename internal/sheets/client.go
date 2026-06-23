@@ -90,7 +90,7 @@ func (c *Client) UpsertTickets(tickets []models.Ticket, jiraClient *jira.Client)
 
 	var requests []*sheets.Request
 	var valueUpdates []*sheets.ValueRange
-	
+
 	// Find the first row that has today's date
 	firstTodayRowIndex := -1
 	for i, row := range existingRows {
@@ -104,12 +104,12 @@ func (c *Client) UpsertTickets(tickets []models.Ticket, jiraClient *jira.Client)
 
 	currentRowCount := len(existingRows)
 
-	// 3. Fill gaps if dates are absent
+	// 3. Fill gaps if dates are absent, including today when there is no row for today yet.
 	insertCount := 0
 	if !lastDate.IsZero() {
-		for d := lastDate.AddDate(0, 0, 1); d.Before(todayMidnight); d = d.AddDate(0, 0, 1) {
+		for d := lastDate.AddDate(0, 0, 1); d.Before(todayMidnight) || (firstTodayRowIndex == -1 && sameDay(d, todayMidnight)); d = d.AddDate(0, 0, 1) {
 			dateStr := d.Format("2006-01-02")
-			
+
 			// If today rows exist, we must INSERT rows to keep order
 			if firstTodayRowIndex != -1 {
 				// Insert a row at the firstTodayRowIndex
@@ -125,13 +125,13 @@ func (c *Client) UpsertTickets(tickets []models.Ticket, jiraClient *jira.Client)
 					},
 				})
 				// Set values for the inserted row
-				writeRange := fmt.Sprintf("%s!A%d", sheetName, firstTodayRowIndex + insertCount + 1)
+				writeRange := fmt.Sprintf("%s!A%d", sheetName, firstTodayRowIndex+insertCount+1)
 				valueUpdates = append(valueUpdates, &sheets.ValueRange{
 					Range:  writeRange,
 					Values: [][]interface{}{{dateStr, "", "", "", ""}},
 				})
 				if isWeekend(d) {
-					requests = append(requests, createRedRowRequest(sheetID, int64(firstTodayRowIndex + insertCount)))
+					requests = append(requests, createRedRowRequest(sheetID, int64(firstTodayRowIndex+insertCount)))
 				}
 				insertCount++
 				currentRowCount++
@@ -170,7 +170,6 @@ func (c *Client) UpsertTickets(tickets []models.Ticket, jiraClient *jira.Client)
 		}
 	}
 
-
 	// Track which rows we've already prepared updates for
 	updatedRowIndices := make(map[int]bool)
 
@@ -178,7 +177,7 @@ func (c *Client) UpsertTickets(tickets []models.Ticket, jiraClient *jira.Client)
 		if rowIndex, exists := todayTicketToRow[t.ID]; exists {
 			actualRowIndex := rowIndex + insertCount
 			updatedRowIndices[actualRowIndex] = true
-			
+
 			row := existingRows[rowIndex]
 			currentComment := ""
 			statusInSheet := ""
@@ -189,8 +188,15 @@ func (c *Client) UpsertTickets(tickets []models.Ticket, jiraClient *jira.Client)
 				statusInSheet = strings.TrimSpace(row[4].(string))
 			}
 
-			// LOGIC: Only set comment if it's currently blank AND status in sheet is "Code Review"
-			if statusInSheet == "Code Review" && currentComment == "" {
+			if statusInSheet != t.Status {
+				updateRange := fmt.Sprintf("%s!E%d", sheetName, actualRowIndex+1)
+				valueUpdates = append(valueUpdates, &sheets.ValueRange{
+					Range:  updateRange,
+					Values: [][]interface{}{{t.Status}},
+				})
+			}
+
+			if t.Status == "Code Review" && currentComment == "" && t.LatestComment != "" {
 				updateRange := fmt.Sprintf("%s!D%d", sheetName, actualRowIndex+1)
 				valueUpdates = append(valueUpdates, &sheets.ValueRange{
 					Range:  updateRange,
@@ -206,7 +212,7 @@ func (c *Client) UpsertTickets(tickets []models.Ticket, jiraClient *jira.Client)
 				comment = t.LatestComment
 			}
 			newRow := []interface{}{todayStr, summaryWithKey, "", comment, t.Status}
-			
+
 			writeRange := fmt.Sprintf("%s!A%d", sheetName, currentRowCount+1)
 			valueUpdates = append(valueUpdates, &sheets.ValueRange{
 				Range:  writeRange,
@@ -255,12 +261,12 @@ func (c *Client) UpsertTickets(tickets []models.Ticket, jiraClient *jira.Client)
 			status = strings.TrimSpace(row[4].(string))
 		}
 		summary, _ := row[1].(string)
-		
+
 		if status == "Code Review" && currentComment == "" {
 			matches := keyRegex.FindStringSubmatch(summary)
 			if len(matches) > 1 {
 				ticketID := matches[1]
-				
+
 				// Dynamic fetch for Code Review tickets not in the sync list
 				if jiraClient != nil {
 					if fetchedT, err := jiraClient.GetTicket(ticketID); err == nil && fetchedT.LatestComment != "" {
@@ -340,7 +346,11 @@ func isSameDate(dateStr string, target time.Time) bool {
 	if err != nil {
 		return false
 	}
-	return t.Year() == target.Year() && t.Month() == target.Month() && t.Day() == target.Day()
+	return sameDay(t, target)
+}
+
+func sameDay(a time.Time, b time.Time) bool {
+	return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
 }
 
 func isWeekend(t time.Time) bool {
